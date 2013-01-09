@@ -1,0 +1,4 @@
+tools:
+  - pep8
+  - pyflakes
+  - jshint
