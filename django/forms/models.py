@@ -141,6 +141,11 @@ def fields_for_model(model, fields=None, exclude=None, widgets=None, formfield_c
     ``exclude`` is an optional list of field names. If provided, the named
     fields will be excluded from the returned fields, even if they are listed
     in the ``fields`` argument.
+
+    ``widgets`` is a dictionary of model field names mapped to a widget
+
+    ``formfield_callback`` is a callable that takes a model field and returns
+    a form field.
     """
     field_list = []
     ignored = []
@@ -371,6 +376,21 @@ class ModelForm(six.with_metaclass(ModelFormMetaclass, BaseModelForm)):
 
 def modelform_factory(model, form=ModelForm, fields=None, exclude=None,
                       formfield_callback=None,  widgets=None):
+    """
+    Returns a ModelForm containing form fields for the given model.
+
+    ``fields`` is an optional list of field names. If provided, only the named
+    fields will be included in the returned fields.
+
+    ``exclude`` is an optional list of field names. If provided, the named
+    fields will be excluded from the returned fields, even if they are listed
+    in the ``fields`` argument.
+
+    ``widgets`` is a dictionary of model field names mapped to a widget.
+
+    ``formfield_callback`` is a callable that takes a model field and returns
+    a form field.
+    """
     # Create the inner Meta class. FIXME: ideally, we should be able to
     # construct a ModelForm without creating and passing in a temporary
     # inner class.
@@ -682,14 +702,11 @@ class BaseInlineFormSet(BaseModelFormSet):
     """A formset for child objects related to a parent."""
     def __init__(self, data=None, files=None, instance=None,
                  save_as_new=False, prefix=None, queryset=None, **kwargs):
-        from django.db.models.fields.related import RelatedObject
         if instance is None:
             self.instance = self.fk.rel.to()
         else:
             self.instance = instance
         self.save_as_new = save_as_new
-        # is there a better way to get the object descriptor?
-        self.rel_name = RelatedObject(self.fk.rel.to, self.model, self.fk).get_accessor_name()
         if queryset is None:
             queryset = self.model._default_manager
         if self.instance.pk:

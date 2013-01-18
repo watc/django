@@ -35,7 +35,6 @@ class QuerySet(object):
     """
     def __init__(self, model=None, query=None, using=None):
         self.model = model
-        # EmptyQuerySet instantiates QuerySet with model as None
         self._db = using
         self.query = query or sql.Query(self.model)
         self._result_cache = None
@@ -44,7 +43,7 @@ class QuerySet(object):
         self._for_write = False
         self._prefetch_related_lookups = []
         self._prefetch_done = False
-        self._known_related_object = None       # (attname, rel_obj)
+        self._known_related_objects = {}        # {rel_field, {pk: rel_obj}}
 
     ########################
     # PYTHON MAGIC METHODS #
@@ -209,26 +208,30 @@ class QuerySet(object):
                 stop = None
             qs.query.set_limits(start, stop)
             return k.step and list(qs)[::k.step] or qs
-        try:
-            qs = self._clone()
-            qs.query.set_limits(k, k + 1)
-            return list(qs)[0]
-        except self.model.DoesNotExist as e:
-            raise IndexError(e.args)
+
+        qs = self._clone()
+        qs.query.set_limits(k, k + 1)
+        return list(qs)[0]
 
     def __and__(self, other):
         self._merge_sanity_check(other)
         if isinstance(other, EmptyQuerySet):
-            return other._clone()
+            return other
+        if isinstance(self, EmptyQuerySet):
+            return self
         combined = self._clone()
+        combined._merge_known_related_objects(other)
         combined.query.combine(other.query, sql.AND)
         return combined
 
     def __or__(self, other):
         self._merge_sanity_check(other)
-        combined = self._clone()
+        if isinstance(self, EmptyQuerySet):
+            return other
         if isinstance(other, EmptyQuerySet):
-            return combined
+            return self
+        combined = self._clone()
+        combined._merge_known_related_objects(other)
         combined.query.combine(other.query, sql.OR)
         return combined
 
@@ -289,10 +292,9 @@ class QuerySet(object):
                     init_list.append(field.attname)
             model_cls = deferred_class_factory(self.model, skip)
 
-        # Cache db, model and known_related_object outside the loop
+        # Cache db and model outside the loop
         db = self.db
         model = self.model
-        kro_attname, kro_instance = self._known_related_object or (None, None)
         compiler = self.query.get_compiler(using=db)
         if fill_cache:
             klass_info = get_klass_info(model, max_depth=max_depth,
@@ -323,9 +325,16 @@ class QuerySet(object):
                 for i, aggregate in enumerate(aggregate_select):
                     setattr(obj, aggregate, row[i + aggregate_start])
 
-            # Add the known related object to the model, if there is one
-            if kro_instance:
-                setattr(obj, kro_attname, kro_instance)
+            # Add the known related objects to the model, if there are any
+            if self._known_related_objects:
+                for field, rel_objs in self._known_related_objects.items():
+                    pk = getattr(obj, field.get_attname())
+                    try:
+                        rel_obj = rel_objs[pk]
+                    except KeyError:
+                        pass               # may happen in qs1 | qs2 scenarios
+                    else:
+                        setattr(obj, field.name, rel_obj)
 
             yield obj
 
@@ -626,7 +635,9 @@ class QuerySet(object):
         """
         Returns an empty QuerySet.
         """
-        return self._clone(klass=EmptyQuerySet)
+        clone = self._clone()
+        clone.query.set_empty()
+        return clone
 
     ##################################################################
     # PUBLIC METHODS THAT ALTER ATTRIBUTES AND RETURN A NEW QUERYSET #
@@ -902,7 +913,7 @@ class QuerySet(object):
         c = klass(model=self.model, query=query, using=self._db)
         c._for_write = self._for_write
         c._prefetch_related_lookups = self._prefetch_related_lookups[:]
-        c._known_related_object = self._known_related_object
+        c._known_related_objects = self._known_related_objects
         c.__dict__.update(kwargs)
         if setup and hasattr(c, '_setup_query'):
             c._setup_query()
@@ -942,6 +953,13 @@ class QuerySet(object):
         """
         pass
 
+    def _merge_known_related_objects(self, other):
+        """
+        Keep track of all known related objects from either QuerySet instance.
+        """
+        for field, objects in other._known_related_objects.items():
+            self._known_related_objects.setdefault(field, {}).update(objects)
+
     def _setup_aggregate_query(self, aggregates):
         """
         Prepare the query for computing a result that contains aggregate annotations.
@@ -968,6 +986,18 @@ class QuerySet(object):
     # empty" result.
     value_annotation = True
 
+class InstanceCheckMeta(type):
+    def __instancecheck__(self, instance):
+        return instance.query.is_empty()
+
+class EmptyQuerySet(six.with_metaclass(InstanceCheckMeta)):
+    """
+    Marker class usable for checking if a queryset is empty by .none():
+        isinstance(qs.none(), EmptyQuerySet) -> True
+    """
+
+    def __init__(self, *args, **kwargs):
+        raise TypeError("EmptyQuerySet can't be instantiated")
 
 class ValuesQuerySet(QuerySet):
     def __init__(self, *args, **kwargs):
@@ -1166,138 +1196,6 @@ class DateQuerySet(QuerySet):
             c._setup_query()
         return c
 
-
-class EmptyQuerySet(QuerySet):
-    def __init__(self, model=None, query=None, using=None):
-        super(EmptyQuerySet, self).__init__(model, query, using)
-        self._result_cache = []
-
-    def __and__(self, other):
-        return self._clone()
-
-    def __or__(self, other):
-        return other._clone()
-
-    def count(self):
-        return 0
-
-    def delete(self):
-        pass
-
-    def _clone(self, klass=None, setup=False, **kwargs):
-        c = super(EmptyQuerySet, self)._clone(klass, setup=setup, **kwargs)
-        c._result_cache = []
-        return c
-
-    def iterator(self):
-        # This slightly odd construction is because we need an empty generator
-        # (it raises StopIteration immediately).
-        yield next(iter([]))
-
-    def all(self):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def filter(self, *args, **kwargs):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def exclude(self, *args, **kwargs):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def complex_filter(self, filter_obj):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def select_related(self, *fields, **kwargs):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def annotate(self, *args, **kwargs):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def order_by(self, *field_names):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def distinct(self, fields=None):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def extra(self, select=None, where=None, params=None, tables=None,
-              order_by=None, select_params=None):
-        """
-        Always returns EmptyQuerySet.
-        """
-        assert self.query.can_filter(), \
-                "Cannot change a query once a slice has been taken"
-        return self
-
-    def reverse(self):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def defer(self, *fields):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def only(self, *fields):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def update(self, **kwargs):
-        """
-        Don't update anything.
-        """
-        return 0
-
-    def aggregate(self, *args, **kwargs):
-        """
-        Return a dict mapping the aggregate names to None
-        """
-        for arg in args:
-            kwargs[arg.default_alias] = arg
-        return dict([(key, None) for key in kwargs])
-
-    def values(self, *fields):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    def values_list(self, *fields, **kwargs):
-        """
-        Always returns EmptyQuerySet.
-        """
-        return self
-
-    # EmptyQuerySet is always an empty result in where-clauses (and similar
-    # situations).
-    value_annotation = False
 
 def get_klass_info(klass, max_depth=0, cur_depth=0, requested=None,
                    only_load=None, from_parent=None):

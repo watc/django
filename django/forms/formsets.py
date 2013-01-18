@@ -157,14 +157,12 @@ class BaseFormSet(object):
         return self.forms[self.initial_form_count():]
 
     @property
-    def empty_form(self, **kwargs):
-        defaults = {
-            'auto_id': self.auto_id,
-            'prefix': self.add_prefix('__prefix__'),
-            'empty_permitted': True,
-        }
-        defaults.update(kwargs)
-        form = self.form(**defaults)
+    def empty_form(self):
+        form = self.form(
+            auto_id=self.auto_id,
+            prefix=self.add_prefix('__prefix__'),
+            empty_permitted=True,
+        )
         self.add_fields(form, None)
         return form
 
@@ -335,7 +333,10 @@ class BaseFormSet(object):
         Returns True if the formset needs to be multipart, i.e. it
         has FileInput. Otherwise, False.
         """
-        return self.forms and self.forms[0].is_multipart()
+        if self.forms:
+            return self.forms[0].is_multipart()
+        else:
+            return self.empty_form.is_multipart()
 
     @property
     def media(self):
@@ -344,7 +345,7 @@ class BaseFormSet(object):
         if self.forms:
             return self.forms[0].media
         else:
-            return Media()
+            return self.empty_form.media
 
     def as_table(self):
         "Returns this formset rendered as HTML <tr>s -- excluding the <table></table>."

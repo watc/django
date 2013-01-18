@@ -593,15 +593,17 @@ none
 
 .. method:: none()
 
-Returns an ``EmptyQuerySet`` — a ``QuerySet`` subclass that always evaluates to
-an empty list. This can be used in cases where you know that you should return
-an empty result set and your caller is expecting a ``QuerySet`` object (instead
-of returning an empty list, for example.)
+Calling none() will create a queryset that never returns any objects and no
+query will be executed when accessing the results. A qs.none() queryset
+is an instance of ``EmptyQuerySet``.
 
 Examples::
 
     >>> Entry.objects.none()
     []
+    >>> from django.db.models.query import EmptyQuerySet
+    >>> isinstance(Entry.objects.none(), EmptyQuerySet)
+    True
 
 all
 ~~~
@@ -2185,6 +2187,14 @@ Django provides the following aggregation functions in the
 ``django.db.models`` module. For details on how to use these
 aggregate functions, see
 :doc:`the topic guide on aggregation </topics/db/aggregation>`.
+
+.. warning::
+
+    SQLite can't handle aggregation on date/time fields out of the box.
+    This is because there are no native date/time fields in SQLite and Django
+    currently emulates these features using a text field. Attempts to use
+    aggregation on date/time fields in SQLite will raise
+    ``NotImplementedError``.
 
 Avg
 ~~~
